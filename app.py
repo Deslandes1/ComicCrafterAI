@@ -15,28 +15,20 @@ st.set_page_config(
     layout="wide"
 )
 
-# ========== TITLE ==========
 st.title("🎬 ComicCrafter AI – Action Video")
-st.markdown("Turn your idea into a **short animated video** with sound effects!")
+st.markdown("Turn your idea into a **short animated video** with built‑in sound effects!")
 
 # ========== SIDEBAR ==========
 with st.sidebar:
     st.markdown("### 🎬 Mode")
     st.info("Generates a 3‑scene animated video with background music and action sounds.")
-    
     st.markdown("---")
     st.markdown("### 🎨 Art Style")
-    art_style = st.selectbox(
-        "Choose Art Style",
-        ["Anime", "Manga", "American", "Belgian"],
-        help="Select the visual style for your video"
-    )
-    
+    art_style = st.selectbox("Choose Art Style", ["Anime", "Manga", "American", "Belgian"])
     st.markdown("---")
     st.markdown("### 🔑 API Status")
     st.info("✅ Pollinations.ai (no API key)")
     st.info("🎵 Built‑in sound generation (no external files)")
-    
     st.markdown("---")
     st.markdown("### 💡 Example Prompts")
     examples = [
@@ -51,7 +43,7 @@ with st.sidebar:
             st.session_state.prompt = ex
             st.rerun()
 
-# ========== GENERATE IMAGE (faster, SDXL) ==========
+# ========== IMAGE GENERATION ==========
 def generate_image(prompt, style="Anime", max_retries=3):
     style_prompts = {
         "Manga": "manga style, black and white",
@@ -92,7 +84,7 @@ def generate_placeholder(panel_num, text):
     img.save(buffered, format="PNG")
     return buffered.getvalue()
 
-# ========== GENERATE FRAMES (3 scenes) ==========
+# ========== GENERATE VIDEO FRAMES (3 scenes) ==========
 def generate_video_frames(prompt, style, num_frames=3):
     prompts = [
         f"{prompt} - scene 1: the beginning",
@@ -109,34 +101,30 @@ def generate_video_frames(prompt, style, num_frames=3):
 
 # ========== SYNTHESIZE SOUND EFFECTS ==========
 def make_background_music(duration):
-    """Generate a simple synth pad loop."""
+    """Generate a simple synth pad loop (A minor chord)."""
     sr = 22050
     t = np.linspace(0, duration, int(sr * duration))
-    # A minor chord: A, C, E (freq 220, 261.63, 329.63)
     freq1, freq2, freq3 = 220, 261.63, 329.63
     wave = (0.3 * np.sin(2 * np.pi * freq1 * t) +
             0.3 * np.sin(2 * np.pi * freq2 * t) +
             0.3 * np.sin(2 * np.pi * freq3 * t))
-    # envelope
     attack = 0.05
     release = 0.05
     env = np.ones_like(t)
     env[:int(sr*attack)] = np.linspace(0, 1, int(sr*attack))
     env[-int(sr*release):] = np.linspace(1, 0, int(sr*release))
     wave *= env
-    wave = wave * 0.3  # lower volume
+    wave *= 0.3
     return wave.astype(np.float32)
 
 def make_explosion_sound(duration=1.0):
-    """White noise with fast decay = explosion."""
+    """White noise with exponential decay = explosion."""
     sr = 22050
     samples = int(sr * duration)
     noise = np.random.normal(0, 1, samples)
-    # envelope: fast attack, exponential decay
     t = np.linspace(0, duration, samples)
-    env = np.exp(-6 * t)  # decay rate
-    wave = noise * env
-    wave = wave * 0.2  # volume
+    env = np.exp(-6 * t)
+    wave = noise * env * 0.2
     return wave.astype(np.float32)
 
 def make_impact_sound(duration=0.3):
@@ -144,16 +132,24 @@ def make_impact_sound(duration=0.3):
     sr = 22050
     samples = int(sr * duration)
     t = np.linspace(0, duration, samples)
-    # combination of sine and noise
     sine = np.sin(2 * np.pi * 800 * t) * np.exp(-10 * t)
     noise = np.random.normal(0, 1, samples) * np.exp(-12 * t)
-    wave = sine * 0.5 + noise * 0.3
-    wave = wave * 0.5
+    wave = (sine * 0.5 + noise * 0.3) * 0.5
     return wave.astype(np.float32)
 
 def make_audio_clip(wave, sr=22050):
-    """Convert numpy wave to AudioClip."""
-    return AudioClip(lambda t: wave[int(t * sr) % len(wave)] if t * sr < len(wave) else 0, duration=len(wave)/sr)
+    """Convert a numpy wave array to an AudioClip."""
+    duration = len(wave) / sr
+    def make_frame(t):
+        # t is a float (time in seconds)
+        idx = int(t * sr)
+        if 0 <= idx < len(wave):
+            return np.array([wave[idx]])  # mono, shape (1,)
+        else:
+            return np.array([0.0])
+    clip = AudioClip(make_frame, duration=duration)
+    clip.fps = sr
+    return clip
 
 # ========== CREATE VIDEO WITH BUILT-IN SOUNDS ==========
 def create_video(images, prompt):
@@ -185,12 +181,12 @@ def create_video(images, prompt):
     
     video = concatenate_videoclips(clips, method="compose")
     
-    # 2. Generate background music
+    # 2. Background music
     bgm_wave = make_background_music(total_duration)
     bgm_clip = make_audio_clip(bgm_wave, 22050)
     bgm_clip = bgm_clip.set_duration(total_duration)
     
-    # 3. Decide which sound effect to use based on prompt
+    # 3. Choose sound effect based on prompt
     keywords = {
         "explosion": make_explosion_sound(1.0),
         "fire": make_explosion_sound(0.8),
@@ -207,7 +203,7 @@ def create_video(images, prompt):
         selected_wave = make_impact_sound(0.5)
     
     # 4. Place sound effect in the middle of scene 2 (approx 1.5s into scene 2)
-    start_time = duration_per_frame * 1 + 1.0  # roughly 1 second after scene 2 starts
+    start_time = duration_per_frame * 1 + 1.0
     sfx_clip = make_audio_clip(selected_wave, 22050)
     sfx_clip = sfx_clip.set_start(start_time)
     
