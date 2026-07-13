@@ -1,10 +1,11 @@
 import streamlit as st
 import requests
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 from io import BytesIO
 import time
 import json
 import re
+import random
 
 # ========== PAGE CONFIG ==========
 st.set_page_config(
@@ -55,10 +56,10 @@ with st.sidebar:
             st.session_state.prompt = ex
             st.rerun()
 
-# ========== GENERATE IMAGE FUNCTION ==========
-def generate_image(prompt, style="American"):
+# ========== GENERATE IMAGE FUNCTION WITH RETRIES ==========
+def generate_image_with_retry(prompt, style="American", max_retries=3):
     """
-    Generate an image using Pollinations.ai (free, no API key required)
+    Generate an image using Pollinations.ai with retry logic.
     """
     # Enhance prompt with style information
     style_prompts = {
@@ -78,22 +79,63 @@ def generate_image(prompt, style="American"):
     url = f"https://image.pollinations.ai/prompt/{formatted_prompt}"
     url += "?width=512&height=512&model=flux"
     
+    # Retry logic
+    for attempt in range(max_retries):
+        try:
+            response = requests.get(url, timeout=60)  # Increased timeout
+            if response.status_code == 200:
+                return response.content
+            elif response.status_code == 429:
+                # Rate limit – wait and retry
+                wait_time = (2 ** attempt) * 2  # 2, 4, 8 seconds
+                st.warning(f"Rate limit hit. Waiting {wait_time}s before retry...")
+                time.sleep(wait_time)
+                continue
+            else:
+                st.error(f"Image generation failed (status {response.status_code})")
+                if attempt == max_retries - 1:
+                    return None
+                time.sleep(1)
+                continue
+        except requests.exceptions.Timeout:
+            st.warning(f"Timeout on attempt {attempt+1}. Retrying...")
+            time.sleep(2)
+            continue
+        except Exception as e:
+            st.error(f"Error generating image: {e}")
+            if attempt == max_retries - 1:
+                return None
+            time.sleep(2)
+            continue
+    
+    return None
+
+# ========== GENERATE PLACEHOLDER IMAGE (fallback) ==========
+def generate_placeholder(panel_num, prompt):
+    """Create a local placeholder image when generation fails."""
+    img = Image.new('RGB', (512, 512), color=(30, 30, 40))
+    draw = ImageDraw.Draw(img)
     try:
-        response = requests.get(url, timeout=30)
-        if response.status_code == 200:
-            return response.content
-        else:
-            st.error(f"Image generation failed (status {response.status_code})")
-            return None
-    except Exception as e:
-        st.error(f"Error generating image: {e}")
-        return None
+        font = ImageFont.truetype("arial.ttf", 30)
+    except:
+        font = ImageFont.load_default()
+    
+    # Draw border
+    draw.rectangle([10, 10, 502, 502], outline=(200, 200, 200), width=3)
+    
+    # Draw text
+    text = f"Panel {panel_num}\n\n{prompt[:50]}..."
+    draw.text((20, 20), text, fill=(255, 255, 255), font=font)
+    
+    # Convert to bytes
+    buffered = BytesIO()
+    img.save(buffered, format="PNG")
+    return buffered.getvalue()
 
 # ========== GENERATE STORY PANELS ==========
 def generate_story_panels(prompt, style):
     """
-    Break the prompt into 3 story panels using AI via Pollinations.
-    Since Pollinations is an image generator, we use it to create each panel.
+    Break the prompt into 3 story panels using Pollinations.ai.
     """
     panel_prompts = [
         f"{prompt} - panel 1: beginning of the story",
@@ -102,19 +144,25 @@ def generate_story_panels(prompt, style):
     ]
     
     images = []
-    with st.spinner("🎨 Creating your comic..."):
-        for i, panel_prompt in enumerate(panel_prompts):
-            progress = (i + 1) / 3
-            st.progress(progress, text=f"Generating panel {i+1}/3...")
-            
-            img_data = generate_image(panel_prompt, style)
-            if img_data:
-                images.append(img_data)
-            else:
-                # Fallback: generate a simple placeholder
-                st.warning(f"Panel {i+1} generation failed. Using placeholder.")
-                images.append(None)
-            time.sleep(0.5)  # Small delay to avoid rate limiting
+    for i, panel_prompt in enumerate(panel_prompts):
+        panel_num = i + 1
+        progress = (i + 1) / 3
+        st.progress(progress, text=f"Generating panel {panel_num}/3...")
+        
+        # Generate with retry
+        img_data = generate_image_with_retry(panel_prompt, style)
+        
+        if img_data:
+            images.append(img_data)
+        else:
+            # Fallback: generate placeholder
+            st.warning(f"Panel {panel_num} generation failed after retries. Using placeholder.")
+            placeholder = generate_placeholder(panel_num, panel_prompt)
+            images.append(placeholder)
+        
+        # Add delay between panels to avoid rate limiting
+        if i < 2:
+            time.sleep(2)
     
     return images
 
@@ -150,22 +198,20 @@ if generate_btn and prompt:
         panel_num = i + 1
         with col:
             st.markdown(f"**Panel {panel_num}**")
-            if images[i] is not None:
-                try:
-                    img = Image.open(BytesIO(images[i]))
-                    st.image(img, use_container_width=True)
-                except Exception:
-                    st.image("https://via.placeholder.com/512x512/222/FFF?text=Panel+{panel_num}", use_container_width=True)
-            else:
-                st.image("https://via.placeholder.com/512x512/222/FFF?text=Panel+{panel_num}", use_container_width=True)
+            try:
+                img = Image.open(BytesIO(images[i]))
+                st.image(img, use_container_width=True)
+            except Exception as e:
+                st.error(f"Could not display panel {panel_num}")
+                # Show fallback text
+                st.markdown(f"*Placeholder for panel {panel_num}*")
             st.caption(f"Scene {panel_num}/3")
     
     st.divider()
     st.success("✅ Comic generated successfully!")
     
     # Download option
-    if all(images):
-        st.info("💡 To download, right-click each image and select 'Save image as...'")
+    st.info("💡 To download, right-click each image and select 'Save image as...'")
 
 elif generate_btn and not prompt:
     st.warning("⚠️ Please enter a story idea first.")
