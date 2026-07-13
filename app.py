@@ -35,7 +35,7 @@ with st.sidebar:
     st.markdown("---")
     st.markdown("### 🔑 API Status")
     st.info("✅ Pollinations.ai (no API key)")
-    st.info("🎵 Sound effects from Google's free sound library")
+    st.info("🎵 Built‑in sound generation (no external files)")
     
     st.markdown("---")
     st.markdown("### 💡 Example Prompts")
@@ -51,7 +51,7 @@ with st.sidebar:
             st.session_state.prompt = ex
             st.rerun()
 
-# ========== GENERATE IMAGE ==========
+# ========== GENERATE IMAGE (faster, SDXL) ==========
 def generate_image(prompt, style="Anime", max_retries=3):
     style_prompts = {
         "Manga": "manga style, black and white",
@@ -92,7 +92,7 @@ def generate_placeholder(panel_num, text):
     img.save(buffered, format="PNG")
     return buffered.getvalue()
 
-# ========== GENERATE FRAMES ==========
+# ========== GENERATE FRAMES (3 scenes) ==========
 def generate_video_frames(prompt, style, num_frames=3):
     prompts = [
         f"{prompt} - scene 1: the beginning",
@@ -107,28 +107,60 @@ def generate_video_frames(prompt, style, num_frames=3):
         time.sleep(1.5)
     return images
 
-# ========== CREATE VIDEO WITH SOUND ==========
-def create_video(images, prompt):
-    total_duration = 4.0 * len(images)  # 4 seconds per scene
-    # 1. Sound effect selection based on prompt keywords
-    sound_map = {
-        "explosion": "https://actions.google.com/sounds/v1/explosion/explosion_short_001.mp3",
-        "battle": "https://actions.google.com/sounds/v1/impact/impact_medium_001.mp3",
-        "fight": "https://actions.google.com/sounds/v1/impact/impact_medium_001.mp3",
-        "fire": "https://actions.google.com/sounds/v1/fire/fire_roar_001.mp3",
-        "crash": "https://actions.google.com/sounds/v1/crash/crash_metal_001.mp3",
-        "explode": "https://actions.google.com/sounds/v1/explosion/explosion_short_001.mp3"
-    }
-    selected_url = None
-    for keyword, url in sound_map.items():
-        if keyword in prompt.lower():
-            selected_url = url
-            break
-    if selected_url is None:
-        selected_url = "https://actions.google.com/sounds/v1/impact/impact_medium_001.mp3"  # default
+# ========== SYNTHESIZE SOUND EFFECTS ==========
+def make_background_music(duration):
+    """Generate a simple synth pad loop."""
+    sr = 22050
+    t = np.linspace(0, duration, int(sr * duration))
+    # A minor chord: A, C, E (freq 220, 261.63, 329.63)
+    freq1, freq2, freq3 = 220, 261.63, 329.63
+    wave = (0.3 * np.sin(2 * np.pi * freq1 * t) +
+            0.3 * np.sin(2 * np.pi * freq2 * t) +
+            0.3 * np.sin(2 * np.pi * freq3 * t))
+    # envelope
+    attack = 0.05
+    release = 0.05
+    env = np.ones_like(t)
+    env[:int(sr*attack)] = np.linspace(0, 1, int(sr*attack))
+    env[-int(sr*release):] = np.linspace(1, 0, int(sr*release))
+    wave *= env
+    wave = wave * 0.3  # lower volume
+    return wave.astype(np.float32)
 
-    # 2. Create video clips
+def make_explosion_sound(duration=1.0):
+    """White noise with fast decay = explosion."""
+    sr = 22050
+    samples = int(sr * duration)
+    noise = np.random.normal(0, 1, samples)
+    # envelope: fast attack, exponential decay
+    t = np.linspace(0, duration, samples)
+    env = np.exp(-6 * t)  # decay rate
+    wave = noise * env
+    wave = wave * 0.2  # volume
+    return wave.astype(np.float32)
+
+def make_impact_sound(duration=0.3):
+    """Short metallic hit."""
+    sr = 22050
+    samples = int(sr * duration)
+    t = np.linspace(0, duration, samples)
+    # combination of sine and noise
+    sine = np.sin(2 * np.pi * 800 * t) * np.exp(-10 * t)
+    noise = np.random.normal(0, 1, samples) * np.exp(-12 * t)
+    wave = sine * 0.5 + noise * 0.3
+    wave = wave * 0.5
+    return wave.astype(np.float32)
+
+def make_audio_clip(wave, sr=22050):
+    """Convert numpy wave to AudioClip."""
+    return AudioClip(lambda t: wave[int(t * sr) % len(wave)] if t * sr < len(wave) else 0, duration=len(wave)/sr)
+
+# ========== CREATE VIDEO WITH BUILT-IN SOUNDS ==========
+def create_video(images, prompt):
     duration_per_frame = 4.0
+    total_duration = duration_per_frame * len(images)
+    
+    # 1. Build video clips
     clips = []
     for idx, img_data in enumerate(images):
         img = Image.open(BytesIO(img_data))
@@ -150,49 +182,43 @@ def create_video(images, prompt):
         frame = np.array(img)
         clip = ImageClip(frame).set_duration(duration_per_frame)
         clips.append(clip)
-
+    
     video = concatenate_videoclips(clips, method="compose")
-
-    # 3. Download sound effect
-    audio_clips = []
-    try:
-        response = requests.get(selected_url, timeout=10)
-        if response.status_code == 200:
-            with tempfile.NamedTemporaryFile(delete=False, suffix='.mp3') as tmp_sfx:
-                tmp_sfx.write(response.content)
-                sfx_path = tmp_sfx.name
-            # Load as audio clip
-            sfx_audio = AudioFileClip(sfx_path)
-            # Place it at the beginning of scene 2 (if we have at least 2 scenes)
-            if len(images) >= 2:
-                start_time = duration_per_frame * 1 + 1.0  # 1 second into scene 2
-                sfx_audio = sfx_audio.set_start(start_time)
-                audio_clips.append(sfx_audio)
-            else:
-                # Only one scene? Place it at the end
-                sfx_audio = sfx_audio.set_start(total_duration - sfx_audio.duration)
-                audio_clips.append(sfx_audio)
-            st.info("🔊 Sound effect loaded.")
-        else:
-            st.warning("⚠️ Could not download sound effect.")
-    except Exception as e:
-        st.warning(f"⚠️ Sound download failed: {e}")
-
-    # 4. Compose audio
-    if audio_clips:
-        final_audio = CompositeAudioClip(audio_clips)
-        video = video.set_audio(final_audio)
-    else:
-        st.warning("No audio added. Video will be silent.")
-
-    # 5. Write video
+    
+    # 2. Generate background music
+    bgm_wave = make_background_music(total_duration)
+    bgm_clip = make_audio_clip(bgm_wave, 22050)
+    bgm_clip = bgm_clip.set_duration(total_duration)
+    
+    # 3. Decide which sound effect to use based on prompt
+    keywords = {
+        "explosion": make_explosion_sound(1.0),
+        "fire": make_explosion_sound(0.8),
+        "battle": make_impact_sound(0.5),
+        "fight": make_impact_sound(0.5),
+        "crash": make_impact_sound(0.6),
+    }
+    selected_wave = None
+    for kw, func in keywords.items():
+        if kw in prompt.lower():
+            selected_wave = func
+            break
+    if selected_wave is None:
+        selected_wave = make_impact_sound(0.5)
+    
+    # 4. Place sound effect in the middle of scene 2 (approx 1.5s into scene 2)
+    start_time = duration_per_frame * 1 + 1.0  # roughly 1 second after scene 2 starts
+    sfx_clip = make_audio_clip(selected_wave, 22050)
+    sfx_clip = sfx_clip.set_start(start_time)
+    
+    # 5. Combine audio
+    final_audio = CompositeAudioClip([bgm_clip, sfx_clip])
+    video = video.set_audio(final_audio)
+    
+    # 6. Write video
     with tempfile.NamedTemporaryFile(delete=False, suffix='.mp4') as tmp_video:
         video.write_videofile(tmp_video.name, fps=24, codec='libx264', audio_codec='aac', verbose=False, logger=None)
         video_path = tmp_video.name
-
-    # Clean up temp sfx file
-    if 'sfx_path' in locals() and os.path.exists(sfx_path):
-        os.unlink(sfx_path)
     return video_path
 
 # ========== MAIN UI ==========
@@ -217,29 +243,23 @@ if generate_btn and prompt:
     st.divider()
     
     with st.spinner("🎨 Generating scenes and adding sound effects (may take 1-2 minutes)..."):
-        # Generate frames (3 scenes)
         frames = generate_video_frames(prompt, art_style, num_frames=3)
-        # Create video with sounds
         video_path = create_video(frames, prompt)
-        # Display video
         video_file = open(video_path, 'rb')
         video_bytes = video_file.read()
         video_file.close()
         st.video(video_bytes)
-        # Download button
         st.download_button(
             label="⬇️ Download Video (MP4)",
             data=video_bytes,
             file_name="action_video.mp4",
             mime="video/mp4"
         )
-        # Clean up
         os.unlink(video_path)
         st.success("✅ Video created successfully!")
 
 elif generate_btn and not prompt:
     st.warning("⚠️ Please enter a story idea first.")
 
-# ========== FOOTER ==========
 st.divider()
-st.caption("Powered by Pollinations.ai (images) + Google Sound Effects + MoviePy (video) | Built with Streamlit")
+st.caption("Powered by Pollinations.ai (images) + built‑in sound synthesis (MoviePy) | Built with Streamlit")
