@@ -117,7 +117,6 @@ def generate_comic(prompt, style):
 
 # ========== ANIME VIDEO MODE ==========
 def generate_video_frames(prompt, style, num_frames=5):
-    # Create a story arc with 5 frames
     prompts = [
         f"{prompt} - frame 1: opening scene",
         f"{prompt} - frame 2: rising action",
@@ -141,24 +140,40 @@ def create_video(images, prompt, style):
         tts.save(tmp_audio.name)
         audio_path = tmp_audio.name
     
-    # 2. Create video frames with subtitles
+    # 2. Create video frames with subtitles using PIL (no ImageMagick)
     clips = []
     duration = 3.0  # seconds per frame
     total_duration = duration * len(images)
     
     for idx, img_data in enumerate(images):
-        # Convert image to numpy array
+        # Open image with PIL
         img = Image.open(BytesIO(img_data))
         img = img.resize((640, 480))  # Resize for video
+        
+        # Draw text on image using PIL
+        draw = ImageDraw.Draw(img)
+        try:
+            font = ImageFont.truetype("arial.ttf", 32)
+        except:
+            font = ImageFont.load_default()
+        
+        text = f"Scene {idx+1}"
+        text_width = draw.textlength(text, font=font)
+        text_height = 40
+        x = (640 - text_width) // 2
+        y = 480 - 60
+        # Add black outline for readability
+        draw.text((x-1, y-1), text, fill='black', font=font)
+        draw.text((x+1, y-1), text, fill='black', font=font)
+        draw.text((x-1, y+1), text, fill='black', font=font)
+        draw.text((x+1, y+1), text, fill='black', font=font)
+        draw.text((x, y), text, fill='white', font=font)
+        
+        # Convert PIL image to numpy array
         frame = np.array(img)
         
         # Create a clip from the frame
         clip = ImageClip(frame).set_duration(duration)
-        
-        # Add subtitle (optional) – a simple text overlay
-        txt_clip = TextClip(f"Scene {idx+1}", fontsize=24, color='white', font='Arial', stroke_color='black', stroke_width=2)
-        txt_clip = txt_clip.set_position(('center', 0.85), relative=True).set_duration(duration)
-        clip = CompositeVideoClip([clip, txt_clip])
         clips.append(clip)
     
     # Concatenate all clips
@@ -166,7 +181,6 @@ def create_video(images, prompt, style):
     
     # Add audio
     audio = AudioFileClip(audio_path)
-    # If audio is shorter than video, loop it; if longer, trim
     if audio.duration < total_duration:
         audio = audio.loop(duration=total_duration)
     else:
