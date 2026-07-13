@@ -8,7 +8,6 @@ import tempfile
 from moviepy.editor import *
 import numpy as np
 
-# ========== PAGE CONFIG ==========
 st.set_page_config(
     page_title="ComicCrafter AI – Action Video",
     page_icon="🎬",
@@ -18,7 +17,6 @@ st.set_page_config(
 st.title("🎬 ComicCrafter AI – Action Video")
 st.markdown("Turn your idea into a **short animated video** with built‑in sound effects!")
 
-# ========== SIDEBAR ==========
 with st.sidebar:
     st.markdown("### 🎬 Mode")
     st.info("Generates a 3‑scene animated video with background music and action sounds.")
@@ -43,7 +41,7 @@ with st.sidebar:
             st.session_state.prompt = ex
             st.rerun()
 
-# ========== IMAGE GENERATION ==========
+# Image generation (unchanged)
 def generate_image(prompt, style="Anime", max_retries=3):
     style_prompts = {
         "Manga": "manga style, black and white",
@@ -55,7 +53,6 @@ def generate_image(prompt, style="Anime", max_retries=3):
     full_prompt = f"{prompt}, {style_text}, high quality"
     formatted = full_prompt.replace(" ", "+")
     url = f"https://image.pollinations.ai/prompt/{formatted}?width=512&height=512&model=sdxl"
-    
     for attempt in range(max_retries):
         try:
             response = requests.get(url, timeout=30)
@@ -84,7 +81,6 @@ def generate_placeholder(panel_num, text):
     img.save(buffered, format="PNG")
     return buffered.getvalue()
 
-# ========== GENERATE VIDEO FRAMES (3 scenes) ==========
 def generate_video_frames(prompt, style, num_frames=3):
     prompts = [
         f"{prompt} - scene 1: the beginning",
@@ -99,7 +95,7 @@ def generate_video_frames(prompt, style, num_frames=3):
         time.sleep(1.5)
     return images
 
-# ========== SYNTHESIZE SOUND EFFECTS ==========
+# Sound generation functions
 def make_background_music(duration):
     sr = 22050
     t = np.linspace(0, duration, int(sr * duration))
@@ -134,27 +130,67 @@ def make_impact_sound(duration=0.3):
     wave = (sine * 0.5 + noise * 0.3) * 0.5
     return wave.astype(np.float32)
 
-def make_audio_clip(wave, sr=22050):
-    """Convert a numpy wave array to an AudioClip with safe indexing."""
-    duration = len(wave) / sr
-    def make_frame(t):
-        # t is in seconds; compute index, clamp to valid range
-        idx = int(round(t * sr))
-        if idx < 0:
-            idx = 0
-        if idx >= len(wave):
-            idx = len(wave) - 1
-        return np.array([wave[idx]])
-    clip = AudioClip(make_frame, duration=duration)
-    clip.fps = sr
-    return clip
-
-# ========== CREATE VIDEO WITH BUILT-IN SOUNDS ==========
 def create_video(images, prompt):
     duration_per_frame = 4.0
     total_duration = duration_per_frame * len(images)
+    sr = 22050
+    total_samples = int(total_duration * sr)
+    combined_audio = np.zeros(total_samples, dtype=np.float32)
     
-    # 1. Build video clips
+    # Background music
+    bgm_wave = make_background_music(total_duration)
+    if len(bgm_wave) > total_samples:
+        bgm_wave = bgm_wave[:total_samples]
+    else:
+        bgm_wave = np.pad(bgm_wave, (0, max(0, total_samples - len(bgm_wave))), 'constant')
+    combined_audio += bgm_wave
+    
+    # Sound effect
+    keywords = {
+        "explosion": make_explosion_sound(1.0),
+        "fire": make_explosion_sound(0.8),
+        "battle": make_impact_sound(0.5),
+        "fight": make_impact_sound(0.5),
+        "crash": make_impact_sound(0.6),
+    }
+    selected_wave = None
+    for kw, func in keywords.items():
+        if kw in prompt.lower():
+            selected_wave = func
+            break
+    if selected_wave is None:
+        selected_wave = make_impact_sound(0.5)
+    
+    start_time = duration_per_frame * 1 + 1.0  # middle of scene 2
+    start_sample = int(start_time * sr)
+    sfx_samples = len(selected_wave)
+    if start_sample + sfx_samples > total_samples:
+        sfx_samples = total_samples - start_sample
+        if sfx_samples > 0:
+            selected_wave = selected_wave[:sfx_samples]
+        else:
+            selected_wave = np.array([])
+    if len(selected_wave) > 0:
+        combined_audio[start_sample:start_sample+len(selected_wave)] += selected_wave
+    
+    # Normalize
+    max_val = np.max(np.abs(combined_audio))
+    if max_val > 0:
+        combined_audio = combined_audio / max_val * 0.8
+    
+    # Audio clip
+    def make_frame(t):
+        idx = int(t * sr + 0.5)
+        if idx < 0:
+            idx = 0
+        if idx >= len(combined_audio):
+            idx = len(combined_audio) - 1
+        return np.array([combined_audio[idx]], dtype=np.float32)
+    
+    audio_clip = AudioClip(make_frame, duration=total_duration)
+    audio_clip.fps = sr
+    
+    # Video clips
     clips = []
     for idx, img_data in enumerate(images):
         img = Image.open(BytesIO(img_data))
@@ -178,54 +214,14 @@ def create_video(images, prompt):
         clips.append(clip)
     
     video = concatenate_videoclips(clips, method="compose")
+    video = video.set_audio(audio_clip)
     
-    # 2. Background music
-    bgm_wave = make_background_music(total_duration)
-    bgm_clip = make_audio_clip(bgm_wave, 22050)
-    bgm_clip = bgm_clip.set_duration(total_duration)
-    
-    # 3. Choose sound effect based on prompt
-    keywords = {
-        "explosion": make_explosion_sound(1.0),
-        "fire": make_explosion_sound(0.8),
-        "battle": make_impact_sound(0.5),
-        "fight": make_impact_sound(0.5),
-        "crash": make_impact_sound(0.6),
-    }
-    selected_wave = None
-    for kw, func in keywords.items():
-        if kw in prompt.lower():
-            selected_wave = func
-            break
-    if selected_wave is None:
-        selected_wave = make_impact_sound(0.5)
-    
-    # 4. Place sound effect in the middle of scene 2 (approx 1.5s into scene 2)
-    start_time = duration_per_frame * 1 + 1.0
-    sfx_duration = len(selected_wave) / 22050
-    # Make sure sfx doesn't exceed total video duration
-    if start_time + sfx_duration > total_duration:
-        sfx_duration = total_duration - start_time
-        if sfx_duration > 0:
-            selected_wave = selected_wave[:int(sfx_duration * 22050)]
-        else:
-            selected_wave = np.array([0.0])
-    
-    sfx_clip = make_audio_clip(selected_wave, 22050)
-    sfx_clip = sfx_clip.set_start(start_time)
-    sfx_clip = sfx_clip.set_duration(sfx_duration)
-    
-    # 5. Combine audio
-    final_audio = CompositeAudioClip([bgm_clip, sfx_clip])
-    video = video.set_audio(final_audio)
-    
-    # 6. Write video
     with tempfile.NamedTemporaryFile(delete=False, suffix='.mp4') as tmp_video:
         video.write_videofile(tmp_video.name, fps=24, codec='libx264', audio_codec='aac', verbose=False, logger=None)
         video_path = tmp_video.name
     return video_path
 
-# ========== MAIN UI ==========
+# UI
 if "prompt" not in st.session_state:
     st.session_state.prompt = ""
 
