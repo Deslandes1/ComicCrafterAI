@@ -101,7 +101,6 @@ def generate_video_frames(prompt, style, num_frames=3):
 
 # ========== SYNTHESIZE SOUND EFFECTS ==========
 def make_background_music(duration):
-    """Generate a simple synth pad loop (A minor chord)."""
     sr = 22050
     t = np.linspace(0, duration, int(sr * duration))
     freq1, freq2, freq3 = 220, 261.63, 329.63
@@ -118,7 +117,6 @@ def make_background_music(duration):
     return wave.astype(np.float32)
 
 def make_explosion_sound(duration=1.0):
-    """White noise with exponential decay = explosion."""
     sr = 22050
     samples = int(sr * duration)
     noise = np.random.normal(0, 1, samples)
@@ -128,7 +126,6 @@ def make_explosion_sound(duration=1.0):
     return wave.astype(np.float32)
 
 def make_impact_sound(duration=0.3):
-    """Short metallic hit."""
     sr = 22050
     samples = int(sr * duration)
     t = np.linspace(0, duration, samples)
@@ -138,15 +135,16 @@ def make_impact_sound(duration=0.3):
     return wave.astype(np.float32)
 
 def make_audio_clip(wave, sr=22050):
-    """Convert a numpy wave array to an AudioClip."""
+    """Convert a numpy wave array to an AudioClip with safe indexing."""
     duration = len(wave) / sr
     def make_frame(t):
-        # t is a float (time in seconds)
-        idx = int(t * sr)
-        if 0 <= idx < len(wave):
-            return np.array([wave[idx]])  # mono, shape (1,)
-        else:
-            return np.array([0.0])
+        # t is in seconds; compute index, clamp to valid range
+        idx = int(round(t * sr))
+        if idx < 0:
+            idx = 0
+        if idx >= len(wave):
+            idx = len(wave) - 1
+        return np.array([wave[idx]])
     clip = AudioClip(make_frame, duration=duration)
     clip.fps = sr
     return clip
@@ -204,8 +202,18 @@ def create_video(images, prompt):
     
     # 4. Place sound effect in the middle of scene 2 (approx 1.5s into scene 2)
     start_time = duration_per_frame * 1 + 1.0
+    sfx_duration = len(selected_wave) / 22050
+    # Make sure sfx doesn't exceed total video duration
+    if start_time + sfx_duration > total_duration:
+        sfx_duration = total_duration - start_time
+        if sfx_duration > 0:
+            selected_wave = selected_wave[:int(sfx_duration * 22050)]
+        else:
+            selected_wave = np.array([0.0])
+    
     sfx_clip = make_audio_clip(selected_wave, 22050)
     sfx_clip = sfx_clip.set_start(start_time)
+    sfx_clip = sfx_clip.set_duration(sfx_duration)
     
     # 5. Combine audio
     final_audio = CompositeAudioClip([bgm_clip, sfx_clip])
