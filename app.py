@@ -35,7 +35,7 @@ with st.sidebar:
     st.markdown("---")
     st.markdown("### 🔑 API Status")
     st.info("✅ Pollinations.ai (no API key)")
-    st.info("🎵 Free sound effects from pixabay.com")
+    st.info("🎵 Sound effects from Google's free sound library")
     
     st.markdown("---")
     st.markdown("### 💡 Example Prompts")
@@ -51,7 +51,7 @@ with st.sidebar:
             st.session_state.prompt = ex
             st.rerun()
 
-# ========== GENERATE IMAGE (faster, SDXL) ==========
+# ========== GENERATE IMAGE ==========
 def generate_image(prompt, style="Anime", max_retries=3):
     style_prompts = {
         "Manga": "manga style, black and white",
@@ -62,7 +62,6 @@ def generate_image(prompt, style="Anime", max_retries=3):
     style_text = style_prompts.get(style, "")
     full_prompt = f"{prompt}, {style_text}, high quality"
     formatted = full_prompt.replace(" ", "+")
-    # Use SDXL for faster generation, or flux if you prefer
     url = f"https://image.pollinations.ai/prompt/{formatted}?width=512&height=512&model=sdxl"
     
     for attempt in range(max_retries):
@@ -93,7 +92,7 @@ def generate_placeholder(panel_num, text):
     img.save(buffered, format="PNG")
     return buffered.getvalue()
 
-# ========== GENERATE FRAMES (3 scenes) ==========
+# ========== GENERATE FRAMES ==========
 def generate_video_frames(prompt, style, num_frames=3):
     prompts = [
         f"{prompt} - scene 1: the beginning",
@@ -105,54 +104,31 @@ def generate_video_frames(prompt, style, num_frames=3):
         st.progress((i+1)/num_frames, text=f"Generating scene {i+1}/{num_frames}...")
         img = generate_image(p, style)
         images.append(img if img else generate_placeholder(i+1, p))
-        time.sleep(1.5)  # small delay to avoid rate limit
+        time.sleep(1.5)
     return images
 
-# ========== CREATE VIDEO WITH SOUND EFFECTS ==========
+# ========== CREATE VIDEO WITH SOUND ==========
 def create_video(images, prompt):
-    # 1. Load background music (royalty-free from pixabay)
-    music_url = "https://cdn.pixabay.com/download/audio/2022/02/22/audio_d3c8f4d1c0.mp3"  # short action bgm
-    try:
-        music_response = requests.get(music_url, timeout=10)
-        music_bytes = music_response.content
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.mp3') as tmp_music:
-            tmp_music.write(music_bytes)
-            music_path = tmp_music.name
-    except:
-        # fallback: silent
-        music_path = None
-
-    # 2. Prepare sound effects (explosion, etc.) based on prompt keywords
-    # We'll use free sound clips from pixabay (short)
-    # Simple mapping: if keyword matches, we download and add at specific times.
+    total_duration = 4.0 * len(images)  # 4 seconds per scene
+    # 1. Sound effect selection based on prompt keywords
     sound_map = {
-        "explosion": "https://cdn.pixabay.com/download/audio/2022/01/18/audio_d52a3a8c2a.mp3",
-        "battle": "https://cdn.pixabay.com/download/audio/2022/01/18/audio_7a1a8c2a.mp3",  # generic impact
-        "fire": "https://cdn.pixabay.com/download/audio/2022/01/18/audio_8b1a2c3d.mp3",
-        "crash": "https://cdn.pixabay.com/download/audio/2022/01/18/audio_4c2a1b3d.mp3",
-        "fight": "https://cdn.pixabay.com/download/audio/2022/01/18/audio_5a2b3c4d.mp3"
+        "explosion": "https://actions.google.com/sounds/v1/explosion/explosion_short_001.mp3",
+        "battle": "https://actions.google.com/sounds/v1/impact/impact_medium_001.mp3",
+        "fight": "https://actions.google.com/sounds/v1/impact/impact_medium_001.mp3",
+        "fire": "https://actions.google.com/sounds/v1/fire/fire_roar_001.mp3",
+        "crash": "https://actions.google.com/sounds/v1/crash/crash_metal_001.mp3",
+        "explode": "https://actions.google.com/sounds/v1/explosion/explosion_short_001.mp3"
     }
-    # Choose first matching sound, else default 'battle'
-    selected_sound = None
+    selected_url = None
     for keyword, url in sound_map.items():
         if keyword in prompt.lower():
-            selected_sound = url
+            selected_url = url
             break
-    if selected_sound is None:
-        selected_sound = "https://cdn.pixabay.com/download/audio/2022/01/18/audio_7a1a8c2a.mp3"
-    
-    try:
-        sfx_response = requests.get(selected_sound, timeout=10)
-        sfx_bytes = sfx_response.content
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.mp3') as tmp_sfx:
-            tmp_sfx.write(sfx_bytes)
-            sfx_path = tmp_sfx.name
-    except:
-        sfx_path = None
+    if selected_url is None:
+        selected_url = "https://actions.google.com/sounds/v1/impact/impact_medium_001.mp3"  # default
 
-    # 3. Create video clips from images
-    duration_per_frame = 4.0  # 4 seconds per scene
-    total_duration = duration_per_frame * len(images)
+    # 2. Create video clips
+    duration_per_frame = 4.0
     clips = []
     for idx, img_data in enumerate(images):
         img = Image.open(BytesIO(img_data))
@@ -163,7 +139,6 @@ def create_video(images, prompt):
         except:
             font = ImageFont.load_default()
         text = f"Scene {idx+1}"
-        # draw text
         tw = draw.textlength(text, font=font)
         x = (640 - tw) // 2
         y = 480 - 60
@@ -176,49 +151,48 @@ def create_video(images, prompt):
         clip = ImageClip(frame).set_duration(duration_per_frame)
         clips.append(clip)
 
-    # 4. Concatenate clips
     video = concatenate_videoclips(clips, method="compose")
 
-    # 5. Add background music (loop if needed)
+    # 3. Download sound effect
     audio_clips = []
-    if music_path:
-        try:
-            bgm = AudioFileClip(music_path)
-            if bgm.duration < total_duration:
-                bgm = bgm.loop(duration=total_duration)
+    try:
+        response = requests.get(selected_url, timeout=10)
+        if response.status_code == 200:
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.mp3') as tmp_sfx:
+                tmp_sfx.write(response.content)
+                sfx_path = tmp_sfx.name
+            # Load as audio clip
+            sfx_audio = AudioFileClip(sfx_path)
+            # Place it at the beginning of scene 2 (if we have at least 2 scenes)
+            if len(images) >= 2:
+                start_time = duration_per_frame * 1 + 1.0  # 1 second into scene 2
+                sfx_audio = sfx_audio.set_start(start_time)
+                audio_clips.append(sfx_audio)
             else:
-                bgm = bgm.subclip(0, total_duration)
-            audio_clips.append(bgm)
-        except:
-            pass
+                # Only one scene? Place it at the end
+                sfx_audio = sfx_audio.set_start(total_duration - sfx_audio.duration)
+                audio_clips.append(sfx_audio)
+            st.info("🔊 Sound effect loaded.")
+        else:
+            st.warning("⚠️ Could not download sound effect.")
+    except Exception as e:
+        st.warning(f"⚠️ Sound download failed: {e}")
 
-    # 6. Add sound effect at a specific point (e.g., middle of second scene)
-    if sfx_path and len(images) >= 2:
-        try:
-            sfx = AudioFileClip(sfx_path)
-            # place it around the middle of the video (at 2 seconds into scene 2)
-            start_time = duration_per_frame * 1 + 1.0  # roughly 1 second into scene 2
-            sfx = sfx.set_start(start_time)
-            audio_clips.append(sfx)
-        except:
-            pass
-
-    # Combine all audio
+    # 4. Compose audio
     if audio_clips:
         final_audio = CompositeAudioClip(audio_clips)
         video = video.set_audio(final_audio)
+    else:
+        st.warning("No audio added. Video will be silent.")
 
-    # 7. Write video
+    # 5. Write video
     with tempfile.NamedTemporaryFile(delete=False, suffix='.mp4') as tmp_video:
         video.write_videofile(tmp_video.name, fps=24, codec='libx264', audio_codec='aac', verbose=False, logger=None)
         video_path = tmp_video.name
 
-    # Cleanup temp files
-    if music_path and os.path.exists(music_path):
-        os.unlink(music_path)
-    if sfx_path and os.path.exists(sfx_path):
+    # Clean up temp sfx file
+    if 'sfx_path' in locals() and os.path.exists(sfx_path):
         os.unlink(sfx_path)
-
     return video_path
 
 # ========== MAIN UI ==========
@@ -268,4 +242,4 @@ elif generate_btn and not prompt:
 
 # ========== FOOTER ==========
 st.divider()
-st.caption("Powered by Pollinations.ai (images) + Pixabay (sound effects) + MoviePy (video) | Built with Streamlit")
+st.caption("Powered by Pollinations.ai (images) + Google Sound Effects + MoviePy (video) | Built with Streamlit")
